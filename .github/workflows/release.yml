@@ -15,7 +15,6 @@ jobs:
           cache: false
       - name: Build all targets
         run: |
-          go mod tidy
           set -e
           VERSION="${GITHUB_REF_NAME}"
           mkdir -p dist
