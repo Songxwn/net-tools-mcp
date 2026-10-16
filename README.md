@@ -58,15 +58,15 @@ docker compose pull
 docker compose up -d
 ```
 
-`docker-compose.yml` 把端口绑在 `127.0.0.1:8080`，并加上 `NET_RAW`。没有这个能力时，容器里的 `ping` 会失败，`ip_me` 仍然可用。
+`docker-compose.yml` 把容器的 8080 映射到宿主机 `18421`，监听所有网卡，并加上 `NET_RAW`。没有这个能力时，容器里的 `ping` 会失败，`ip_me` 仍然可用。
 
-Cursor 使用 HTTP 地址：
+Cursor 使用 HTTP 地址（把主机换成部署机器的 IP）：
 
 ```json
 {
   "mcpServers": {
     "net-tools": {
-      "url": "http://127.0.0.1:8080/mcp"
+      "url": "http://192.0.2.10:18421/mcp"
     }
   }
 }
@@ -78,4 +78,4 @@ Cursor 使用 HTTP 地址：
 docker run -i --rm -e MCP_LISTEN= --cap-add=NET_RAW ghcr.io/songxwn/net-tools-mcp:latest
 ```
 
-这个服务会替调用方发 ping 和访问 ip.me。只在本机或内网使用，不要把 8080 暴露到公网。
+这个服务会替调用方发 ping 和访问 ip.me。宿主机端口 `18421` 对所有来源 IP 开放。

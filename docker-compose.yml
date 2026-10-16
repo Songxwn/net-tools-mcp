@@ -2,7 +2,7 @@ services:
   net-tools-mcp:
     image: ghcr.io/songxwn/net-tools-mcp:latest
     ports:
-      - "127.0.0.1:8080:8080"
+      - "18421:8080"
     environment:
       MCP_LISTEN: ":8080"
     cap_add:
