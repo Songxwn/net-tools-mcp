@@ -103,7 +103,7 @@ func registerTools(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name:        "ip_me",
 		Title:       "公网 IP 归属",
-		Description: "查询本机出口公网 IP 及归属。先请求 ip.me，失败或没有归属时依次尝试 ip.sb、ipinfo.io、ipwho.is、ifconfig.co、ident.me、ip-api.com。传入 ip 时查询该地址的归属。",
+		Description: "查询本机出口公网 IP 及归属。先请求 ip.me，失败或没有归属时并行尝试 ip.sb、ipinfo.io、ipwho.is、ifconfig.co、ident.me、ip-api.com，并按该优先级取结果。10 秒内必定返回。传入 ip 时查询该地址的归属。",
 		Annotations: hints,
 	}, ipMeTool)
 }

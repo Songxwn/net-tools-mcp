@@ -25,7 +25,7 @@
 | --- | --- |
 | `ip` | 可选。留空查询本机出口；填写则查询该公网地址 |
 
-先查询 ip.me。请求失败、被限流或页面没有归属时，再依次尝试 api.ip.sb、ipinfo.io、ipwho.is、ifconfig.co、ident.me、ip-api.com，返回第一个带国家、城市、组织、ISP 或 ASN 的结果。ident.me 只用于查询本机出口。
+先查 ip.me。失败、被限流或没有归属时，同时查询 api.ip.sb、ipinfo.io、ipwho.is、ifconfig.co、ident.me、ip-api.com，按这个优先级返回第一个带国家、城市、组织、ISP 或 ASN 的结果。整次查询最长约 10 秒，超时也返回已拿到的 IP 或明确的失败说明。ident.me 只用于查询本机出口。
 
 ## 在 Cursor 里启用
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 )
 
 const sampleIPMeHTML = `
@@ -56,31 +58,46 @@ func TestFormatIPMe(t *testing.T) {
 }
 
 func TestLookupSourcesFallsBack(t *testing.T) {
-	called := 0
 	sources := []geoSource{
 		{name: "ip.me", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
-			called++
 			return ipMeOutput{}, fmt.Errorf("HTTP 429")
 		}},
 		{name: "ip.sb", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
-			called++
 			return ipMeOutput{}, fmt.Errorf("无归属信息")
 		}},
 		{name: "ipinfo.io", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
-			called++
 			return ipMeOutput{IP: "8.8.8.8", Country: "United States", ASN: "15169", Source: "https://ipinfo.io/json"}, nil
 		}},
-		{name: "unused", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
-			t.Fatal("later source should not be called")
-			return ipMeOutput{}, nil
+		{name: "later", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			return ipMeOutput{IP: "1.1.1.1", Country: "Australia", Source: "later"}, nil
 		}},
 	}
-	got, err := lookupSources(context.Background(), nil, "", sources)
+	got, err := lookupSources(context.Background(), nil, "", sources, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Source != "https://ipinfo.io/json" || got.ASN != "15169" || called != 3 {
-		t.Fatalf("%+v called=%d", got, called)
+	if got.Source != "https://ipinfo.io/json" || got.ASN != "15169" {
+		t.Fatalf("%+v", got)
+	}
+}
+
+func TestLookupSourcesPrefersEarlierAttribution(t *testing.T) {
+	sources := []geoSource{
+		{name: "ip.me", lookup: func(ctx context.Context, _ *http.Client, _ string) (ipMeOutput, error) {
+			<-ctx.Done()
+			return ipMeOutput{}, ctx.Err()
+		}},
+		{name: "ip.sb", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			return ipMeOutput{IP: "8.8.8.8", Country: "United States", Source: "https://api.ip.sb/geoip"}, nil
+		}},
+	}
+	start := time.Now()
+	got, err := lookupSources(context.Background(), nil, "", sources, 200*time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "https://api.ip.sb/geoip" || time.Since(start) > time.Second {
+		t.Fatalf("%+v elapsed %s", got, time.Since(start))
 	}
 }
 
@@ -90,9 +107,12 @@ func TestLookupSourcesKeepsIPWhenAttributionMissing(t *testing.T) {
 			return ipMeOutput{IP: "1.2.3.4", Source: "https://ip.me"}, nil
 		}},
 	}
-	got, err := lookupSources(context.Background(), nil, "", sources)
+	got, err := lookupSources(context.Background(), nil, "", sources, time.Second)
 	if err != nil || got.IP != "1.2.3.4" {
 		t.Fatalf("%+v %v", got, err)
+	}
+	if !strings.Contains(formatIPMe(got), "未获取到归属") {
+		t.Fatal(formatIPMe(got))
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,46 +55,112 @@ func lookupIPMe(ctx context.Context, query string) (ipMeOutput, error) {
 		query = ip.String()
 	}
 	client := &http.Client{
-		Timeout:       8 * time.Second,
+		Timeout:       4 * time.Second,
 		CheckRedirect: allowProviderRedirect,
 	}
-	return lookupSources(ctx, client, query, defaultGeoSources)
+	return lookupSources(ctx, client, query, defaultGeoSources, 10*time.Second)
 }
 
-func lookupSources(ctx context.Context, client *http.Client, query string, sources []geoSource) (ipMeOutput, error) {
+type geoResult struct {
+	out ipMeOutput
+	err error
+}
+
+func lookupSources(ctx context.Context, client *http.Client, query string, sources []geoSource, budget time.Duration) (ipMeOutput, error) {
+	ctx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	ready := make([]chan geoResult, len(sources))
+	for i, src := range sources {
+		ready[i] = make(chan geoResult, 1)
+		go func(src geoSource, ch chan geoResult) {
+			out, err := src.lookup(ctx, client, query)
+			ch <- geoResult{out: out, err: err}
+		}(src, ready[i])
+	}
+
+	got := make([]geoResult, len(sources))
+	seen := make([]bool, len(sources))
 	var partial ipMeOutput
 	var errs []string
-	for _, src := range sources {
-		if ctx.Err() != nil {
-			return ipMeOutput{}, ctx.Err()
+	next := 0
+	for next < len(sources) {
+		if !seen[next] {
+			select {
+			case got[next] = <-ready[next]:
+				seen[next] = true
+			case <-ctx.Done():
+				collectReady(ready, got, seen)
+			}
 		}
-		out, err := src.lookup(ctx, client, query)
-		if err != nil {
-			errs = append(errs, src.name+": "+err.Error())
+		if !seen[next] {
+			next++
 			continue
 		}
-		if query != "" && out.IP == "" {
-			out.IP = query
+		out, errText, ok := acceptGeo(sources[next].name, got[next], query)
+		if errText != "" {
+			errs = append(errs, errText)
 		}
-		if net.ParseIP(out.IP) == nil || (query != "" && out.IP != query) {
-			errs = append(errs, src.name+": 未返回所查询的 IP")
+		if !ok {
+			next++
 			continue
 		}
 		if out.hasAttribution() {
+			log.Printf("归属查询使用 %s，IP %s", sources[next].name, out.IP)
 			return out, nil
 		}
 		if partial.IP == "" {
 			partial = out
 		}
-		errs = append(errs, src.name+": 无归属信息")
+		next++
 	}
 	if partial.IP != "" {
+		if ctx.Err() != nil {
+			log.Printf("归属查询超时，返回已获得的 IP %s", partial.IP)
+		}
 		return partial, nil
+	}
+	if ctx.Err() != nil {
+		errs = append(errs, "总超时")
 	}
 	if len(errs) == 0 {
 		return ipMeOutput{}, errors.New("没有可用的归属查询站点")
 	}
+	if ctx.Err() != nil {
+		return ipMeOutput{}, fmt.Errorf("归属查询超时：%s", strings.Join(errs, "；"))
+	}
 	return ipMeOutput{}, fmt.Errorf("归属查询失败：%s", strings.Join(errs, "；"))
+}
+
+func collectReady(ready []chan geoResult, got []geoResult, seen []bool) {
+	for i := range ready {
+		if seen[i] {
+			continue
+		}
+		select {
+		case got[i] = <-ready[i]:
+			seen[i] = true
+		default:
+		}
+	}
+}
+
+func acceptGeo(name string, got geoResult, query string) (ipMeOutput, string, bool) {
+	if got.err != nil {
+		log.Printf("归属查询 %s 失败：%s", name, got.err.Error())
+		return ipMeOutput{}, name + ": " + got.err.Error(), false
+	}
+	out := got.out
+	if query != "" && out.IP == "" {
+		out.IP = query
+	}
+	if net.ParseIP(out.IP) == nil || (query != "" && out.IP != query) {
+		return ipMeOutput{}, name + ": 未返回所查询的 IP", false
+	}
+	if !out.hasAttribution() {
+		return out, name + ": 无归属信息", true
+	}
+	return out, "", true
 }
 
 func (o ipMeOutput) hasAttribution() bool {
@@ -265,6 +332,9 @@ func formatIPMe(out ipMeOutput) string {
 	}
 	if out.Source != "" {
 		parts = append(parts, "来源: "+out.Source)
+	}
+	if !out.hasAttribution() {
+		parts = append(parts, "未获取到归属")
 	}
 	return strings.Join(parts, "，")
 }
