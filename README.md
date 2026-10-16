@@ -42,3 +42,40 @@
 ```
 
 标准输出只用于 MCP 协议。服务不会把日志写到 stdout。
+
+## 容器部署
+
+推送到 `main` 或打 `v*` 标签后，GitHub Actions 会构建 Linux amd64 / arm64 镜像并推到 GHCR：
+
+`ghcr.io/songxwn/net-tools-mcp:latest`
+
+镜像里默认设置 `MCP_LISTEN=:8080`，提供 Streamable HTTP，MCP 路径是 `/mcp`，健康检查是 `/healthz`。镜像内已安装 `ping` 和 CA 证书。不要在本机 `docker build` 或 `go build`。
+
+在仓库目录执行：
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+`docker-compose.yml` 把端口绑在 `127.0.0.1:8080`，并加上 `NET_RAW`。没有这个能力时，容器里的 `ping` 会失败，`ip_me` 仍然可用。
+
+Cursor 使用 HTTP 地址：
+
+```json
+{
+  "mcpServers": {
+    "net-tools": {
+      "url": "http://127.0.0.1:8080/mcp"
+    }
+  }
+}
+```
+
+如果仍要用 stdio 跑容器，清掉镜像里的监听地址：
+
+```bash
+docker run -i --rm -e MCP_LISTEN= --cap-add=NET_RAW ghcr.io/songxwn/net-tools-mcp:latest
+```
+
+这个服务会替调用方发 ping 和访问 ip.me。只在本机或内网使用，不要把 8080 暴露到公网。
