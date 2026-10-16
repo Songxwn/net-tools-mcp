@@ -25,7 +25,7 @@
 | --- | --- |
 | `ip` | 可选。留空查询本机出口；填写则查询该公网地址 |
 
-`curl https://ip.me` 只返回纯文本 IP。归属来自同一站点对浏览器返回的查询表（城市、国家、组织、ASN、ISP）。
+先查询 ip.me。请求失败、被限流或页面没有归属时，再依次尝试 api.ip.sb、ipinfo.io、ipwho.is、ifconfig.co、ident.me、ip-api.com，返回第一个带国家、城市、组织、ISP 或 ASN 的结果。ident.me 只用于查询本机出口。
 
 ## 在 Cursor 里启用
 

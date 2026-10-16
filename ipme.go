@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,7 +18,7 @@ import (
 const ipMeHost = "ip.me"
 
 type ipMeInput struct {
-	IP string `json:"ip,omitempty" jsonschema:"可选。留空则查询本机出口公网 IP 及其归属；填写则只查询该 IP 在 ip.me 上的归属"`
+	IP string `json:"ip,omitempty" jsonschema:"可选。留空则查询本机出口公网 IP 及其归属；填写则查询该 IP 的归属"`
 }
 
 type ipMeOutput struct {
@@ -45,32 +46,79 @@ func ipMeTool(ctx context.Context, _ *mcp.CallToolRequest, in ipMeInput) (*mcp.C
 }
 
 func lookupIPMe(ctx context.Context, query string) (ipMeOutput, error) {
-	client := &http.Client{
-		Timeout:       15 * time.Second,
-		CheckRedirect: allowIPMeRedirect,
-	}
 	if query != "" {
 		ip := net.ParseIP(query)
 		if ip == nil {
 			return ipMeOutput{}, fmt.Errorf("ip 不是合法地址：%s", query)
 		}
-		page := (&url.URL{Scheme: "https", Host: ipMeHost, Path: "/ip/" + ip.String()}).String()
-		body, err := getIPMe(ctx, client, page, browserUA, "text/html")
+		query = ip.String()
+	}
+	client := &http.Client{
+		Timeout:       8 * time.Second,
+		CheckRedirect: allowProviderRedirect,
+	}
+	return lookupSources(ctx, client, query, defaultGeoSources)
+}
+
+func lookupSources(ctx context.Context, client *http.Client, query string, sources []geoSource) (ipMeOutput, error) {
+	var partial ipMeOutput
+	var errs []string
+	for _, src := range sources {
+		if ctx.Err() != nil {
+			return ipMeOutput{}, ctx.Err()
+		}
+		out, err := src.lookup(ctx, client, query)
+		if err != nil {
+			errs = append(errs, src.name+": "+err.Error())
+			continue
+		}
+		if query != "" && out.IP == "" {
+			out.IP = query
+		}
+		if net.ParseIP(out.IP) == nil || (query != "" && out.IP != query) {
+			errs = append(errs, src.name+": 未返回所查询的 IP")
+			continue
+		}
+		if out.hasAttribution() {
+			return out, nil
+		}
+		if partial.IP == "" {
+			partial = out
+		}
+		errs = append(errs, src.name+": 无归属信息")
+	}
+	if partial.IP != "" {
+		return partial, nil
+	}
+	if len(errs) == 0 {
+		return ipMeOutput{}, errors.New("没有可用的归属查询站点")
+	}
+	return ipMeOutput{}, fmt.Errorf("归属查询失败：%s", strings.Join(errs, "；"))
+}
+
+func (o ipMeOutput) hasAttribution() bool {
+	return o.Country != "" || o.City != "" || o.Organization != "" || o.ISP != "" || o.ASN != ""
+}
+
+func lookupIPMeSite(ctx context.Context, client *http.Client, query string) (ipMeOutput, error) {
+	if query != "" {
+		page := (&url.URL{Scheme: "https", Host: ipMeHost, Path: "/ip/" + query}).String()
+		body, err := getText(ctx, client, page, browserUA, "text/html")
 		if err != nil {
 			return ipMeOutput{}, err
 		}
 		out := parseIPMeHTML(body)
 		if out.IP == "" {
-			out.IP = ip.String()
-		}
-		if out.Organization == "" && out.Country == "" && out.ISP == "" {
-			return ipMeOutput{}, fmt.Errorf("ip.me 未返回 %s 的归属信息", ip.String())
+			out.IP = query
 		}
 		out.Source = page
+		if !out.hasAttribution() {
+			return out, fmt.Errorf("ip.me 未返回归属")
+		}
 		return out, nil
 	}
 
-	plain, err := getIPMe(ctx, client, "https://ip.me", curlUA, "*/*")
+	plain, err := getText(ctx, client, "https://ip.me", curlUA, "*/*")
 	if err != nil {
 		return ipMeOutput{}, err
 	}
@@ -78,19 +126,18 @@ func lookupIPMe(ctx context.Context, query string) (ipMeOutput, error) {
 	if err != nil {
 		return ipMeOutput{}, err
 	}
-	page := "https://ip.me/"
-	html, err := getIPMe(ctx, client, page, browserUA, "text/html")
 	out := ipMeOutput{IP: ip, Source: "https://ip.me"}
+	html, err := getText(ctx, client, "https://ip.me/", browserUA, "text/html")
 	if err != nil {
 		return out, nil
 	}
 	attr := parseIPMeHTML(html)
 	attr.IP = ip
 	attr.Source = out.Source
-	if attr.Country == "" && attr.Organization == "" && attr.ISP == "" {
-		return out, nil
+	if attr.hasAttribution() {
+		return attr, nil
 	}
-	return attr, nil
+	return out, nil
 }
 
 const (
@@ -98,18 +145,22 @@ const (
 	browserUA = "Mozilla/5.0"
 )
 
-func allowIPMeRedirect(req *http.Request, via []*http.Request) error {
-	if len(via) >= 3 {
-		return fmt.Errorf("ip.me 重定向次数过多")
+func allowProviderRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) == 0 || len(via) >= 3 {
+		return fmt.Errorf("重定向过多")
 	}
-	host := req.URL.Hostname()
-	if req.URL.Scheme != "https" || (host != ipMeHost && host != "www.ip.me") {
-		return fmt.Errorf("拒绝跳转到 %s", req.URL.String())
+	from := via[0].URL.Hostname()
+	to := req.URL.Hostname()
+	if req.URL.Scheme != "https" && req.URL.Scheme != "http" {
+		return fmt.Errorf("拒绝协议 %s", req.URL.Scheme)
 	}
-	return nil
+	if to == from || to == "www."+from || from == "www."+to {
+		return nil
+	}
+	return fmt.Errorf("拒绝跳转到 %s", req.URL.Host)
 }
 
-func getIPMe(ctx context.Context, client *http.Client, rawURL, userAgent, accept string) (string, error) {
+func getText(ctx context.Context, client *http.Client, rawURL, userAgent, accept string) (string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return "", err
@@ -138,7 +189,7 @@ func parsePlainIP(body string) (string, error) {
 	}
 	ip := net.ParseIP(line)
 	if ip == nil {
-		return "", fmt.Errorf("ip.me 未返回公网 IP：%s", truncate(line, 120))
+		return "", fmt.Errorf("未返回公网 IP：%s", truncate(line, 120))
 	}
 	return ip.String(), nil
 }
@@ -195,8 +246,12 @@ func cleanIPMeValue(s string) string {
 
 func formatIPMe(out ipMeOutput) string {
 	parts := []string{"公网 IP: " + out.IP}
-	if out.Country != "" || out.City != "" {
-		place := strings.TrimSpace(out.Country + " " + out.City)
+	placeName := out.Country
+	if placeName == "" {
+		placeName = out.CountryCode
+	}
+	if placeName != "" || out.City != "" {
+		place := strings.TrimSpace(placeName + " " + out.City)
 		parts = append(parts, "归属: "+place)
 	}
 	if out.Organization != "" {
@@ -207,6 +262,9 @@ func formatIPMe(out ipMeOutput) string {
 	}
 	if out.ASN != "" {
 		parts = append(parts, "ASN: "+out.ASN)
+	}
+	if out.Source != "" {
+		parts = append(parts, "来源: "+out.Source)
 	}
 	return strings.Join(parts, "，")
 }

@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"testing"
+)
 
 const sampleIPMeHTML = `
 <p class="ip-address">188.253.127.89</p>
@@ -44,8 +49,58 @@ func TestParseIPMeHTML(t *testing.T) {
 }
 
 func TestFormatIPMe(t *testing.T) {
-	text := formatIPMe(ipMeOutput{IP: "8.8.8.8", Country: "United States", Organization: "Google", ASN: "15169", ISP: "Google"})
-	if text != "公网 IP: 8.8.8.8，归属: United States，组织: Google，ASN: 15169" {
+	text := formatIPMe(ipMeOutput{IP: "8.8.8.8", Country: "United States", Organization: "Google", ASN: "15169", ISP: "Google", Source: "https://api.ip.sb/geoip"})
+	if text != "公网 IP: 8.8.8.8，归属: United States，组织: Google，ASN: 15169，来源: https://api.ip.sb/geoip" {
 		t.Fatalf("%s", text)
+	}
+}
+
+func TestLookupSourcesFallsBack(t *testing.T) {
+	called := 0
+	sources := []geoSource{
+		{name: "ip.me", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			called++
+			return ipMeOutput{}, fmt.Errorf("HTTP 429")
+		}},
+		{name: "ip.sb", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			called++
+			return ipMeOutput{}, fmt.Errorf("无归属信息")
+		}},
+		{name: "ipinfo.io", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			called++
+			return ipMeOutput{IP: "8.8.8.8", Country: "United States", ASN: "15169", Source: "https://ipinfo.io/json"}, nil
+		}},
+		{name: "unused", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			t.Fatal("later source should not be called")
+			return ipMeOutput{}, nil
+		}},
+	}
+	got, err := lookupSources(context.Background(), nil, "", sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Source != "https://ipinfo.io/json" || got.ASN != "15169" || called != 3 {
+		t.Fatalf("%+v called=%d", got, called)
+	}
+}
+
+func TestLookupSourcesKeepsIPWhenAttributionMissing(t *testing.T) {
+	sources := []geoSource{
+		{name: "ip.me", lookup: func(context.Context, *http.Client, string) (ipMeOutput, error) {
+			return ipMeOutput{IP: "1.2.3.4", Source: "https://ip.me"}, nil
+		}},
+	}
+	got, err := lookupSources(context.Background(), nil, "", sources)
+	if err != nil || got.IP != "1.2.3.4" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}
+
+func TestDefaultGeoSources(t *testing.T) {
+	if len(defaultGeoSources) < 6 {
+		t.Fatalf("sources: %d", len(defaultGeoSources))
+	}
+	if defaultGeoSources[0].name != "ip.me" || defaultGeoSources[1].name != "ip.sb" {
+		t.Fatalf("%s %s", defaultGeoSources[0].name, defaultGeoSources[1].name)
 	}
 }
